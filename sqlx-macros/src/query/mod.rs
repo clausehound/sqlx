@@ -9,7 +9,7 @@ pub use input::QueryMacroInput;
 use quote::{format_ident, quote};
 use sqlx_core::connection::Connection;
 use sqlx_core::database::Database;
-use sqlx_core::statement::StatementInfo;
+use sqlx_core::{column::Column, describe::Describe, type_info::TypeInfo};
 use sqlx_rt::block_on;
 
 use crate::database::DatabaseExt;
@@ -163,28 +163,28 @@ pub fn expand_from_file(
     }
 }
 
-// marker trait for `StatementInfo` that lets us conditionally require it to be `Serialize + Deserialize`
+// marker trait for `Describe` that lets us conditionally require it to be `Serialize + Deserialize`
 #[cfg(feature = "offline")]
-trait StatementInfoExt: serde::Serialize + serde::de::DeserializeOwned {}
+trait DescribeExt: serde::Serialize + serde::de::DeserializeOwned {}
 
 #[cfg(feature = "offline")]
-impl<DB: Database> StatementInfoExt for StatementInfo<DB> where
-    StatementInfo<DB>: serde::Serialize + serde::de::DeserializeOwned
+impl<DB: Database> DescribeExt for Describe<DB> where
+    Describe<DB>: serde::Serialize + serde::de::DeserializeOwned
 {
 }
 
 #[cfg(not(feature = "offline"))]
-trait StatementInfoExt {}
+trait DescribeExt {}
 
 #[cfg(not(feature = "offline"))]
-impl<DB: Database> StatementInfoExt for StatementInfo<DB> {}
+impl<DB: Database> DescribeExt for Describe<DB> {}
 
 fn expand_with_data<DB: DatabaseExt>(
     input: QueryMacroInput,
     data: QueryData<DB>,
 ) -> crate::Result<TokenStream>
 where
-    StatementInfo<DB>: StatementInfoExt,
+    Describe<DB>: DescribeExt,
 {
     // validate at the minimum that our args match the query's input parameters
     let num_parameters = match data.describe.parameters() {
@@ -195,10 +195,10 @@ where
     };
 
     if let Some(num) = num_parameters {
-        if num != input.arg_names.len() {
+        if num != input.arg_exprs.len() {
             return Err(syn::Error::new(
                 Span::call_site(),
-                format!("expected {} parameters, got {}", num, input.arg_names.len()),
+                format!("expected {} parameters, got {}", num, input.arg_exprs.len()),
             )
             .into());
         }
@@ -208,7 +208,12 @@ where
 
     let query_args = format_ident!("query_args");
 
-    let output = if data.describe.columns().is_empty() {
+    let output = if data
+        .describe
+        .columns()
+        .iter()
+        .all(|it| it.type_info().is_void())
+    {
         let db_path = DB::db_path();
         let sql = &input.src;
 
@@ -223,7 +228,7 @@ where
                 let record_name: Type = syn::parse_str("Record").unwrap();
 
                 for rust_col in &columns {
-                    if rust_col.type_.is_none() {
+                    if rust_col.type_.is_wildcard() {
                         return Err(
                             "columns may not have wildcard overrides in `query!()` or `query_as!()"
                                 .into(),
@@ -260,19 +265,13 @@ where
         record_tokens
     };
 
-    let arg_names = &input.arg_names;
+    let ret_tokens = quote! {{
+        use sqlx::Arguments as _;
 
-    let ret_tokens = quote! {
-        macro_rules! macro_result {
-            (#($#arg_names:expr),*) => {{
-                use sqlx::Arguments as _;
+        #args_tokens
 
-                #args_tokens
-
-                #output
-            }}
-        }
-    };
+        #output
+    }};
 
     #[cfg(feature = "offline")]
     {

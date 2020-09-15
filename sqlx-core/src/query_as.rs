@@ -5,12 +5,12 @@ use futures_core::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
 use crate::arguments::IntoArguments;
-use crate::database::{Database, HasArguments};
+use crate::database::{Database, HasArguments, HasStatement};
 use crate::encode::Encode;
 use crate::error::Error;
 use crate::executor::{Execute, Executor};
 use crate::from_row::FromRow;
-use crate::query::{query, query_with, Query};
+use crate::query::{query, query_statement, query_statement_with, query_with, Query};
 use crate::types::Type;
 
 /// Raw SQL query with bind parameters, mapped to a concrete type using [`FromRow`].
@@ -27,13 +27,23 @@ where
     A: 'q + IntoArguments<'q, DB>,
 {
     #[inline]
-    fn query(&self) -> &'q str {
-        self.inner.query()
+    fn sql(&self) -> &'q str {
+        self.inner.sql()
+    }
+
+    #[inline]
+    fn statement(&self) -> Option<&<DB as HasStatement<'q>>::Statement> {
+        self.inner.statement()
     }
 
     #[inline]
     fn take_arguments(&mut self) -> Option<<DB as HasArguments<'q>>::Arguments> {
         self.inner.take_arguments()
+    }
+
+    #[inline]
+    fn persistent(&self) -> bool {
+        self.inner.persistent()
     }
 }
 
@@ -142,7 +152,7 @@ where
 }
 
 /// Make a SQL query that is mapped to a concrete type
-/// using [`FromRow`](crate::row::FromRow).
+/// using [`FromRow`].
 #[inline]
 pub fn query_as<'q, DB, O>(sql: &'q str) -> QueryAs<'q, DB, O, <DB as HasArguments<'q>>::Arguments>
 where
@@ -156,7 +166,7 @@ where
 }
 
 /// Make a SQL query, with the given arguments, that is mapped to a concrete type
-/// using [`FromRow`](crate::row::FromRow).
+/// using [`FromRow`].
 #[inline]
 pub fn query_as_with<'q, DB, O, A>(sql: &'q str, arguments: A) -> QueryAs<'q, DB, O, A>
 where
@@ -166,6 +176,36 @@ where
 {
     QueryAs {
         inner: query_with(sql, arguments),
+        output: PhantomData,
+    }
+}
+
+// Make a SQL query from a statement, that is mapped to a concrete type.
+pub(crate) fn query_statement_as<'q, DB, O>(
+    statement: &'q <DB as HasStatement<'q>>::Statement,
+) -> QueryAs<'q, DB, O, <DB as HasArguments<'_>>::Arguments>
+where
+    DB: Database,
+    O: for<'r> FromRow<'r, DB::Row>,
+{
+    QueryAs {
+        inner: query_statement(statement),
+        output: PhantomData,
+    }
+}
+
+// Make a SQL query from a statement, with the given arguments, that is mapped to a concrete type.
+pub(crate) fn query_statement_as_with<'q, DB, O, A>(
+    statement: &'q <DB as HasStatement<'q>>::Statement,
+    arguments: A,
+) -> QueryAs<'q, DB, O, A>
+where
+    DB: Database,
+    A: IntoArguments<'q, DB>,
+    O: for<'r> FromRow<'r, DB::Row>,
+{
+    QueryAs {
+        inner: query_statement_with(statement, arguments),
         output: PhantomData,
     }
 }

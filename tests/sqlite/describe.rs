@@ -43,13 +43,13 @@ async fn it_describes_variables() -> anyhow::Result<()> {
     // without any context, we resolve to NULL
     let info = conn.describe("SELECT ?1").await?;
 
-    assert_eq!(info.column(0).type_info().name(), "NULL");
+    assert_eq!(info.columns()[0].type_info().name(), "NULL");
     assert_eq!(info.nullable(0), None); // unknown
 
     // context can be provided by using CAST(_ as _)
     let info = conn.describe("SELECT CAST(?1 AS REAL)").await?;
 
-    assert_eq!(info.column(0).type_info().name(), "REAL");
+    assert_eq!(info.columns()[0].type_info().name(), "REAL");
     assert_eq!(info.nullable(0), None); // unknown
 
     Ok(())
@@ -95,19 +95,19 @@ async fn it_describes_expression_from_empty_table() -> anyhow::Result<()> {
         .describe("SELECT COUNT(*), a + 1, name, 5.12, 'Hello' FROM _temp_empty")
         .await?;
 
-    assert_eq!(d.column(0).type_info().name(), "INTEGER");
+    assert_eq!(d.columns()[0].type_info().name(), "INTEGER");
     assert_eq!(d.nullable(0), Some(false)); // COUNT(*)
 
-    assert_eq!(d.column(1).type_info().name(), "INTEGER");
+    assert_eq!(d.columns()[1].type_info().name(), "INTEGER");
     assert_eq!(d.nullable(1), None); // `a + 1` is potentially nullable but we don't know for sure currently
 
-    assert_eq!(d.column(2).type_info().name(), "TEXT");
+    assert_eq!(d.columns()[2].type_info().name(), "TEXT");
     assert_eq!(d.nullable(2), Some(false)); // `name` is not nullable
 
-    assert_eq!(d.column(3).type_info().name(), "REAL");
+    assert_eq!(d.columns()[3].type_info().name(), "REAL");
     assert_eq!(d.nullable(3), Some(false)); // literal constant
 
-    assert_eq!(d.column(4).type_info().name(), "TEXT");
+    assert_eq!(d.columns()[4].type_info().name(), "TEXT");
     assert_eq!(d.nullable(4), Some(false)); // literal constant
 
     Ok(())
@@ -124,10 +124,10 @@ async fn it_describes_expression_from_empty_table_with_star() -> anyhow::Result<
         .describe("SELECT *, 5, 'Hello' FROM _temp_empty")
         .await?;
 
-    assert_eq!(d.column(0).type_info().name(), "TEXT");
-    assert_eq!(d.column(1).type_info().name(), "INTEGER");
-    assert_eq!(d.column(2).type_info().name(), "INTEGER");
-    assert_eq!(d.column(3).type_info().name(), "TEXT");
+    assert_eq!(d.columns()[0].type_info().name(), "TEXT");
+    assert_eq!(d.columns()[1].type_info().name(), "INTEGER");
+    assert_eq!(d.columns()[2].type_info().name(), "INTEGER");
+    assert_eq!(d.columns()[3].type_info().name(), "TEXT");
 
     Ok(())
 }
@@ -147,7 +147,7 @@ async fn it_describes_insert() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(d.columns().len(), 1);
-    assert_eq!(d.column(0).type_info().name(), "INTEGER");
+    assert_eq!(d.columns()[0].type_info().name(), "INTEGER");
     assert_eq!(d.nullable(0), Some(false));
 
     Ok(())

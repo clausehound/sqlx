@@ -42,20 +42,28 @@ jobs:
           toolchain: stable
           override: true
 
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-check-${{ matrix.runtime }}-${{ hashFiles('**/Cargo.lock') }}
+
       - uses: actions-rs/cargo@v1
         with:
           command: check
           args: >
             --manifest-path sqlx-core/Cargo.toml
             --no-default-features
-            --features offline,all-databases,all-types,runtime-${{ matrix.runtime }}
+            --features offline,all-databases,all-types,migrate,runtime-${{ matrix.runtime }}
 
       - uses: actions-rs/cargo@v1
         with:
           command: check
           args: >
             --no-default-features
-            --features offline,all-databases,all-types,runtime-${{ matrix.runtime }},macros
+            --features offline,all-databases,all-types,migrate,runtime-${{ matrix.runtime }},macros
 
   test:
     name: Unit Test
@@ -69,12 +77,67 @@ jobs:
           toolchain: stable
           override: true
 
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+
       - uses: actions-rs/cargo@v1
         with:
           command: test
           args: >
             --manifest-path sqlx-core/Cargo.toml
             --features offline,all-databases,all-types
+
+  cli:
+    name: CLI Binaries
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            args: --features openssl-vendored
+            bin: target/debug/cargo-sqlx
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: target/debug/cargo-sqlx.exe
+          - os: macOS-latest
+            target: x86_64-apple-darwin
+            bin: target/debug/cargo-sqlx
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-${{ hashFiles('**/Cargo.lock') }}
+
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --manifest-path sqlx-cli/Cargo.toml --bin cargo-sqlx ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: cargo-sqlx-${{ matrix.target }}
+          path: ${{ matrix.bin }}
 
   sqlite:
     name: SQLite
@@ -92,12 +155,20 @@ jobs:
           toolchain: stable
           override: true
 
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-sqlite-${{ matrix.runtime }}-${{ hashFiles('**/Cargo.lock') }}
+
       - uses: actions-rs/cargo@v1
         with:
           command: test
           args: >
             --no-default-features
-            --features any,macros,sqlite,all-types,runtime-${{ matrix.runtime }}
+            --features any,macros,migrate,sqlite,all-types,runtime-${{ matrix.runtime }}
             --
             --test-threads=1
         env:
@@ -119,6 +190,14 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-postgres-${{ matrix.runtime }}-${{ hashFiles('**/Cargo.lock') }}
 
       - uses: actions-rs/cargo@v1
         with:
@@ -143,7 +222,7 @@ jobs:
           command: test
           args: >
             --no-default-features
-            --features any,postgres,macros,all-types,runtime-${{ matrix.runtime }}
+            --features any,postgres,macros,migrate,all-types,runtime-${{ matrix.runtime }}
         env:
           DATABASE_URL: postgres://postgres:password@localhost:5432/sqlx?sslmode=verify-ca&sslrootcert=.%2Ftests%2Fcerts%2Fca.crt
 
@@ -164,6 +243,14 @@ jobs:
           toolchain: stable
           override: true
 
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mysql-${{ matrix.runtime }}-${{ hashFiles('**/Cargo.lock') }}
+
       - uses: actions-rs/cargo@v1
         with:
           command: build
@@ -178,7 +265,7 @@ jobs:
           command: test
           args: >
             --no-default-features
-            --features any,mysql,macros,all-types,runtime-${{ matrix.runtime }}
+            --features any,mysql,macros,migrate,all-types,runtime-${{ matrix.runtime }}
         env:
           DATABASE_URL: mysql://root:password@localhost:3306/sqlx
 
@@ -199,6 +286,15 @@ jobs:
           toolchain: stable
           override: true
 
+      # same Cargo features as MySQL so the same cache can be used
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mysql-${{ matrix.runtime }}-${{ hashFiles('**/Cargo.lock') }}
+
       - uses: actions-rs/cargo@v1
         with:
           command: build
@@ -213,7 +309,7 @@ jobs:
           command: test
           args: >
             --no-default-features
-            --features any,mysql,macros,all-types,runtime-${{ matrix.runtime }}
+            --features any,mysql,macros,migrate,all-types,runtime-${{ matrix.runtime }}
         env:
           DATABASE_URL: mysql://root:password@localhost:3306/sqlx
 
@@ -234,6 +330,14 @@ jobs:
           toolchain: stable
           override: true
 
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mssql-${{ matrix.runtime }}-${{ hashFiles('**/Cargo.lock') }}
+
       - uses: actions-rs/cargo@v1
         with:
           command: build
@@ -248,6 +352,6 @@ jobs:
           command: test
           args: >
             --no-default-features
-            --features any,mssql,macros,all-types,runtime-${{ matrix.runtime }}
+            --features any,mssql,macros,migrate,all-types,runtime-${{ matrix.runtime }}
         env:
           DATABASE_URL: mssql://sa:Password123!@localhost/sqlx

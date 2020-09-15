@@ -15,7 +15,8 @@ use crate::postgres::connection::stream::PgStream;
 use crate::postgres::message::{
     Close, Message, MessageFormat, ReadyForQuery, Terminate, TransactionStatus,
 };
-use crate::postgres::{PgColumn, PgConnectOptions, PgTypeInfo, Postgres};
+use crate::postgres::statement::PgStatementMetadata;
+use crate::postgres::{PgConnectOptions, PgTypeInfo, Postgres};
 use crate::transaction::Transaction;
 
 pub(crate) mod describe;
@@ -47,7 +48,7 @@ pub struct PgConnection {
     next_statement_id: u32,
 
     // cache statement by query string to the id and columns
-    cache_statement: StatementCache<u32>,
+    cache_statement: StatementCache<(u32, Arc<PgStatementMetadata>)>,
 
     // cache user-defined types by id <-> info
     cache_type_info: HashMap<u32, PgTypeInfo>,
@@ -59,10 +60,6 @@ pub struct PgConnection {
     // current transaction status
     transaction_status: TransactionStatus,
     pub(crate) transaction_depth: usize,
-
-    // working memory for the active row's column information
-    scratch_row_columns: Arc<Vec<PgColumn>>,
-    scratch_row_column_names: Arc<HashMap<UStr, usize>>,
 }
 
 impl PgConnection {
@@ -77,7 +74,6 @@ impl PgConnection {
 
             if let MessageFormat::ReadyForQuery = message.format {
                 self.handle_ready_for_query(message)?;
-                break;
             }
         }
 
@@ -152,8 +148,8 @@ impl Connection for PgConnection {
 
             self.wait_until_ready().await?;
 
-            while let Some(statement) = self.cache_statement.remove_lru() {
-                self.stream.write(Close::Statement(statement));
+            while let Some((id, _)) = self.cache_statement.remove_lru() {
+                self.stream.write(Close::Statement(id));
                 cleared += 1;
             }
 

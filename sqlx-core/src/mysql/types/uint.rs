@@ -1,19 +1,18 @@
-use std::convert::TryInto;
-
-use byteorder::{ByteOrder, LittleEndian};
-
 use crate::decode::Decode;
 use crate::encode::{Encode, IsNull};
 use crate::error::BoxDynError;
 use crate::mysql::protocol::text::{ColumnFlags, ColumnType};
 use crate::mysql::{MySql, MySqlTypeInfo, MySqlValueFormat, MySqlValueRef};
 use crate::types::Type;
+use byteorder::{ByteOrder, LittleEndian};
+use std::convert::TryInto;
 
 fn uint_type_info(ty: ColumnType) -> MySqlTypeInfo {
     MySqlTypeInfo {
         r#type: ty,
         flags: ColumnFlags::BINARY | ColumnFlags::UNSIGNED,
         char_set: 63,
+        max_size: None,
     }
 }
 
@@ -25,6 +24,8 @@ fn uint_compatible(ty: &MySqlTypeInfo) -> bool {
             | ColumnType::Long
             | ColumnType::Int24
             | ColumnType::LongLong
+            | ColumnType::Year
+            | ColumnType::Bit
     ) && ty.flags.contains(ColumnFlags::UNSIGNED)
 }
 
@@ -101,8 +102,22 @@ impl Encode<'_, MySql> for u64 {
 }
 
 fn uint_decode(value: MySqlValueRef<'_>) -> Result<u64, BoxDynError> {
+    if value.type_info.r#type == ColumnType::Bit {
+        // NOTE: Regardless of the value format, there is raw binary data here
+
+        let buf = value.as_bytes()?;
+        let mut value: u64 = 0;
+
+        for b in buf {
+            value = (*b as u64) | (value << 8);
+        }
+
+        return Ok(value);
+    }
+
     Ok(match value.format() {
         MySqlValueFormat::Text => value.as_str()?.parse()?,
+
         MySqlValueFormat::Binary => {
             let buf = value.as_bytes()?;
             LittleEndian::read_uint(buf, buf.len())

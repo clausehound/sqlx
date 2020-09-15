@@ -1,8 +1,6 @@
-use std::env;
 use std::fs;
 
 use proc_macro2::{Ident, Span};
-use quote::format_ident;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{Expr, LitBool, LitStr, Token};
@@ -17,8 +15,6 @@ pub struct QueryMacroInput {
 
     pub(super) record_type: RecordType,
 
-    // `arg0 .. argN` for N arguments
-    pub(super) arg_names: Vec<Ident>,
     pub(super) arg_exprs: Vec<Expr>,
 
     pub(super) checked: bool,
@@ -82,15 +78,11 @@ impl Parse for QueryMacroInput {
             query_src.ok_or_else(|| input.error("expected `source` or `source_file` key"))?;
 
         let arg_exprs = args.unwrap_or_default();
-        let arg_names = (0..arg_exprs.len())
-            .map(|i| format_ident!("arg{}", i))
-            .collect();
 
         Ok(QueryMacroInput {
             src: src.resolve(src_span)?,
             src_span,
             record_type,
-            arg_names,
             arg_exprs,
             checked,
         })
@@ -108,40 +100,7 @@ impl QuerySrc {
 }
 
 fn read_file_src(source: &str, source_span: Span) -> syn::Result<String> {
-    use std::path::Path;
-
-    let path = Path::new(source);
-
-    if path.is_absolute() {
-        return Err(syn::Error::new(
-            source_span,
-            "absolute paths will only work on the current machine",
-        ));
-    }
-
-    // requires `proc_macro::SourceFile::path()` to be stable
-    // https://github.com/rust-lang/rust/issues/54725
-    if path.is_relative()
-        && !path
-            .parent()
-            .map_or(false, |parent| !parent.as_os_str().is_empty())
-    {
-        return Err(syn::Error::new(
-            source_span,
-            "paths relative to the current file's directory are not currently supported",
-        ));
-    }
-
-    let base_dir = env::var("CARGO_MANIFEST_DIR").map_err(|_| {
-        syn::Error::new(
-            source_span,
-            "CARGO_MANIFEST_DIR is not set; please use Cargo to build",
-        )
-    })?;
-
-    let base_dir_path = Path::new(&base_dir);
-
-    let file_path = base_dir_path.join(path);
+    let file_path = crate::common::resolve_path(source, source_span)?;
 
     fs::read_to_string(&file_path).map_err(|e| {
         syn::Error::new(

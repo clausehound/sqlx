@@ -1,7 +1,8 @@
 use futures::TryStreamExt;
-use sqlx::mysql::{MySql, MySqlPool, MySqlPoolOptions, MySqlRow};
-use sqlx::{Connection, Done, Executor, Row};
-use sqlx_test::new;
+use sqlx::mysql::{MySql, MySqlConnection, MySqlPool, MySqlPoolOptions, MySqlRow};
+use sqlx::{Column, Connection, Done, Executor, Row, Statement, TypeInfo};
+use sqlx_test::{new, setup_if_needed};
+use std::env;
 
 #[sqlx_macros::test]
 async fn it_connects() -> anyhow::Result<()> {
@@ -98,6 +99,26 @@ async fn it_executes_with_pool() -> anyhow::Result<()> {
 }
 
 #[sqlx_macros::test]
+async fn it_works_with_cache_disabled() -> anyhow::Result<()> {
+    setup_if_needed();
+
+    let mut url = url::Url::parse(&env::var("DATABASE_URL")?)?;
+    url.query_pairs_mut()
+        .append_pair("statement-cache-capacity", "0");
+
+    let mut conn = MySqlConnection::connect(url.as_ref()).await?;
+
+    for index in 1..=10_i32 {
+        let _ = sqlx::query("SELECT ?")
+            .bind(index)
+            .execute(&mut conn)
+            .await?;
+    }
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn it_drops_results_in_affected_rows() -> anyhow::Result<()> {
     let mut conn = new::<MySql>().await?;
 
@@ -186,6 +207,7 @@ async fn it_caches_statements() -> anyhow::Result<()> {
     for i in 0..2 {
         let row = sqlx::query("SELECT ? AS val")
             .bind(i)
+            .persistent(true)
             .fetch_one(&mut conn)
             .await?;
 
@@ -196,6 +218,20 @@ async fn it_caches_statements() -> anyhow::Result<()> {
 
     assert_eq!(1, conn.cached_statements_size());
     conn.clear_cached_statements().await?;
+    assert_eq!(0, conn.cached_statements_size());
+
+    for i in 0..2 {
+        let row = sqlx::query("SELECT ? AS val")
+            .bind(i)
+            .persistent(false)
+            .fetch_one(&mut conn)
+            .await?;
+
+        let val: u32 = row.get("val");
+
+        assert_eq!(i, val);
+    }
+
     assert_eq!(0, conn.cached_statements_size());
 
     Ok(())
@@ -232,6 +268,68 @@ async fn it_can_bind_only_null_issue_540() -> anyhow::Result<()> {
     let v0: Option<i32> = row.get(0);
 
     assert_eq!(v0, None);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_can_bind_and_return_years() -> anyhow::Result<()> {
+    let mut conn = new::<MySql>().await?;
+
+    conn.execute(
+        r#"
+CREATE TEMPORARY TABLE too_many_years (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    the YEAR NOT NULL
+);
+    "#,
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
+INSERT INTO too_many_years ( the ) VALUES ( ? );
+    "#,
+    )
+    .bind(2142)
+    .execute(&mut conn)
+    .await?;
+
+    let the: u16 = sqlx::query_scalar("SELECT the FROM too_many_years")
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert_eq!(the, 2142);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_can_prepare_then_execute() -> anyhow::Result<()> {
+    let mut conn = new::<MySql>().await?;
+    let mut tx = conn.begin().await?;
+
+    let tweet_id: u64 = sqlx::query("INSERT INTO tweet ( text ) VALUES ( 'Hello, World' )")
+        .execute(&mut tx)
+        .await?
+        .last_insert_id();
+
+    let statement = tx.prepare("SELECT * FROM tweet WHERE id = ?").await?;
+
+    assert_eq!(statement.column(0).name(), "id");
+    assert_eq!(statement.column(1).name(), "created_at");
+    assert_eq!(statement.column(2).name(), "text");
+    assert_eq!(statement.column(3).name(), "owner_id");
+
+    assert_eq!(statement.column(0).type_info().name(), "BIGINT");
+    assert_eq!(statement.column(1).type_info().name(), "TIMESTAMP");
+    assert_eq!(statement.column(2).type_info().name(), "TEXT");
+    assert_eq!(statement.column(3).type_info().name(), "BIGINT");
+
+    let row = statement.query().bind(tweet_id).fetch_one(&mut tx).await?;
+    let tweet_text: &str = row.try_get("text")?;
+
+    assert_eq!(tweet_text, "Hello, World");
 
     Ok(())
 }

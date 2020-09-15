@@ -1,64 +1,10 @@
-use std::fmt::Debug;
-
+use crate::column::ColumnIndex;
 use crate::database::{Database, HasValueRef};
 use crate::decode::Decode;
 use crate::error::{mismatched_types, Error};
 use crate::type_info::TypeInfo;
 use crate::types::Type;
 use crate::value::ValueRef;
-
-/// A type that can be used to index into a [`Row`].
-///
-/// The [`get`] and [`try_get`] methods of [`Row`] accept any type that implements `ColumnIndex`.
-/// This trait is implemented for strings which are used to look up a column by name, and for
-/// `usize` which is used as a positional index into the row.
-///
-/// This trait is sealed and cannot be implemented for types outside of SQLx.
-///
-/// [`Row`]: trait.Row.html
-/// [`get`]: trait.Row.html#method.get
-/// [`try_get`]: trait.Row.html#method.try_get
-///
-pub trait ColumnIndex<R: Row + ?Sized>: private_column_index::Sealed + Debug {
-    /// Returns a valid positional index into the row, [`ColumnIndexOutOfBounds`], or,
-    /// [`ColumnNotFound`].
-    ///
-    /// [`ColumnNotFound`]: ../enum.Error.html#variant.ColumnNotFound
-    /// [`ColumnIndexOutOfBounds`]: ../enum.Error.html#variant.ColumnIndexOutOfBounds
-    fn index(&self, row: &R) -> Result<usize, Error>;
-}
-
-impl<R, I> ColumnIndex<R> for &'_ I
-where
-    R: Row + ?Sized,
-    I: ColumnIndex<R> + ?Sized,
-{
-    #[inline]
-    fn index(&self, row: &R) -> Result<usize, Error> {
-        (**self).index(row)
-    }
-}
-
-impl<R: Row> ColumnIndex<R> for usize {
-    fn index(&self, row: &R) -> Result<usize, Error> {
-        let len = row.len();
-
-        if *self >= len {
-            return Err(Error::ColumnIndexOutOfBounds { len, index: *self });
-        }
-
-        Ok(*self)
-    }
-}
-
-// Prevent users from implementing the `ColumnIndex` trait.
-mod private_column_index {
-    pub trait Sealed {}
-
-    impl Sealed for usize {}
-    impl Sealed for str {}
-    impl<T> Sealed for &'_ T where T: Sealed + ?Sized {}
-}
 
 /// Represents a single row from the database.
 ///
@@ -158,9 +104,9 @@ pub trait Row: private_row::Sealed + Unpin + Send + Sync + 'static {
     ///  * [`ColumnIndexOutOfBounds`] if the `usize` index was greater than the number of columns in the row.
     ///  * [`ColumnDecode`] if the value could not be decoded into the requested type.
     ///
-    /// [`ColumnDecode`]: crate::Error::ColumnDecode
-    /// [`ColumnNotFound`]: crate::Error::ColumnNotFound
-    /// [`ColumnIndexOutOfBounds`]: crate::Error::ColumnIndexOutOfBounds
+    /// [`ColumnDecode`]: Error::ColumnDecode
+    /// [`ColumnNotFound`]: Error::ColumnNotFound
+    /// [`ColumnIndexOutOfBounds`]: Error::ColumnIndexOutOfBounds
     ///
     fn try_get<'r, T, I>(&'r self, index: I) -> Result<T, Error>
     where
@@ -198,9 +144,9 @@ pub trait Row: private_row::Sealed + Unpin + Send + Sync + 'static {
     ///  * [`ColumnIndexOutOfBounds`] if the `usize` index was greater than the number of columns in the row.
     ///  * [`ColumnDecode`] if the value could not be decoded into the requested type.
     ///
-    /// [`ColumnDecode`]: crate::Error::ColumnDecode
-    /// [`ColumnNotFound`]: crate::Error::ColumnNotFound
-    /// [`ColumnIndexOutOfBounds`]: crate::Error::ColumnIndexOutOfBounds
+    /// [`ColumnDecode`]: Error::ColumnDecode
+    /// [`ColumnNotFound`]: Error::ColumnNotFound
+    /// [`ColumnIndexOutOfBounds`]: Error::ColumnIndexOutOfBounds
     ///
     #[inline]
     fn try_get_unchecked<'r, T, I>(&'r self, index: I) -> Result<T, Error>
@@ -223,8 +169,8 @@ pub trait Row: private_row::Sealed + Unpin + Send + Sync + 'static {
     ///  * [`ColumnNotFound`] if the column by the given name was not found.
     ///  * [`ColumnIndexOutOfBounds`] if the `usize` index was greater than the number of columns in the row.
     ///
-    /// [`ColumnNotFound`]: crate::Error::ColumnNotFound
-    /// [`ColumnIndexOutOfBounds`]: crate::Error::ColumnIndexOutOfBounds
+    /// [`ColumnNotFound`]: Error::ColumnNotFound
+    /// [`ColumnIndexOutOfBounds`]: Error::ColumnIndexOutOfBounds
     ///
     fn try_get_raw<I>(
         &self,

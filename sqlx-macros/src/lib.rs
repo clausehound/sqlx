@@ -12,18 +12,13 @@ type Error = Box<dyn std::error::Error>;
 
 type Result<T> = std::result::Result<T, Error>;
 
+mod common;
 mod database;
 mod derives;
 mod query;
 
-fn macro_result(tokens: proc_macro2::TokenStream) -> TokenStream {
-    quote!(
-        macro_rules! macro_result {
-            ($($args:tt)*) => (#tokens)
-        }
-    )
-    .into()
-}
+#[cfg(feature = "migrate")]
+mod migrate;
 
 #[proc_macro]
 pub fn expand_query(input: TokenStream) -> TokenStream {
@@ -33,10 +28,10 @@ pub fn expand_query(input: TokenStream) -> TokenStream {
         Ok(ts) => ts.into(),
         Err(e) => {
             if let Some(parse_err) = e.downcast_ref::<syn::Error>() {
-                macro_result(parse_err.to_compile_error())
+                parse_err.to_compile_error().into()
             } else {
                 let msg = e.to_string();
-                macro_result(quote!(compile_error!(#msg)))
+                quote!(compile_error!(#msg)).into()
             }
         }
     }
@@ -76,6 +71,25 @@ pub fn derive_from_row(input: TokenStream) -> TokenStream {
     match derives::expand_derive_from_row(&input) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
+    }
+}
+
+#[cfg(feature = "migrate")]
+#[proc_macro]
+pub fn migrate(input: TokenStream) -> TokenStream {
+    use syn::LitStr;
+
+    let input = syn::parse_macro_input!(input as LitStr);
+    match migrate::expand_migrator_from_dir(input) {
+        Ok(ts) => ts.into(),
+        Err(e) => {
+            if let Some(parse_err) = e.downcast_ref::<syn::Error>() {
+                parse_err.to_compile_error().into()
+            } else {
+                let msg = e.to_string();
+                quote!(compile_error!(#msg)).into()
+            }
+        }
     }
 }
 

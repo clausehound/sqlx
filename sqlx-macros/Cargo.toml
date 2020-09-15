@@ -1,6 +1,6 @@
 [package]
 name = "sqlx-macros"
-version = "0.4.0-pre"
+version = "0.4.0-beta.1"
 repository = "https://github.com/launchbadge/sqlx"
 description = "Macros for SQLx, the rust SQL toolkit. Not intended to be used directly."
 license = "MIT OR Apache-2.0"
@@ -8,7 +8,7 @@ edition = "2018"
 authors = [
     "Ryan Leckey <leckey.ryan@gmail.com>", # ryan@launchbadge.com
     "Austin Bonander <austin.bonander@gmail.com>", # austin@launchbadge.com
-    "Zachery Gyurkovitz <zgyurkovitz@gmail.com>", # zach@launchbadge.com
+    "Chloe Ross <orangesnowfox@gmail.com>", # chloe@launchbadge.com
     "Daniel Akhterov <akhterovd@gmail.com>", # daniel@launchbadge.com
 ]
 
@@ -16,7 +16,8 @@ authors = [
 proc-macro = true
 
 [features]
-default = [ "runtime-async-std" ]
+default = [ "runtime-async-std", "migrate" ]
+migrate = [ "sha2" ]
 
 # runtimes
 runtime-async-std = [ "sqlx-core/runtime-async-std", "sqlx-rt/runtime-async-std" ]
@@ -39,6 +40,7 @@ chrono = [ "sqlx-core/chrono" ]
 time = [ "sqlx-core/time" ]
 ipnetwork = [ "sqlx-core/ipnetwork" ]
 uuid = [ "sqlx-core/uuid" ]
+bit-vec = [ "sqlx-core/bit-vec" ]
 json = [ "sqlx-core/json", "serde_json" ]
 
 [dependencies]
@@ -48,8 +50,8 @@ hex = { version = "0.4.2", optional = true }
 heck = "0.3.1"
 either = "1.5.3"
 proc-macro2 = { version = "1.0.9", default-features = false }
-sqlx-core = { version = "0.4.0-pre", default-features = false, path = "../sqlx-core" }
-sqlx-rt = { version = "0.1.0-pre", default-features = false, path = "../sqlx-rt" }
+sqlx-core = { version = "0.4.0-beta.1", default-features = false, path = "../sqlx-core" }
+sqlx-rt = { version = "0.1.1", default-features = false, path = "../sqlx-rt" }
 serde = { version = "1.0.111", optional = true }
 serde_json = { version = "1.0.30", features = [ "preserve_order" ], optional = true }
 sha2 = { version = "0.9.1", optional = true }

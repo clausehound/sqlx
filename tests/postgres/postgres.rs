@@ -2,9 +2,9 @@ use futures::TryStreamExt;
 use sqlx::postgres::{
     PgConnectOptions, PgConnection, PgDatabaseError, PgErrorPosition, PgSeverity,
 };
-use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{postgres::Postgres, Connection, Done, Executor, Row};
-use sqlx_test::new;
+use sqlx::postgres::{PgPoolOptions, PgRow, Postgres};
+use sqlx::{Column, Connection, Done, Executor, Row, Statement, TypeInfo};
+use sqlx_test::{new, setup_if_needed};
 use std::env;
 use std::thread;
 use std::time::Duration;
@@ -28,7 +28,7 @@ async fn it_can_select_void() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
 
     // pg_notify just happens to be a function that returns void
-    let _value: () = sqlx::query_scalar("select pg_notify('chan', 'message');")
+    let _: () = sqlx::query_scalar("select pg_notify('chan', 'message');")
         .fetch_one(&mut conn)
         .await?;
 
@@ -112,6 +112,53 @@ CREATE TEMPORARY TABLE users (id INTEGER PRIMARY KEY);
         .await?;
 
     assert_eq!(sum, 55);
+
+    Ok(())
+}
+
+#[cfg(feature = "json")]
+#[sqlx_macros::test]
+async fn it_describes_and_inserts_json_and_jsonb() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    let _ = conn
+        .execute(
+            r#"
+CREATE TEMPORARY TABLE json_stuff (obj json, obj2 jsonb);
+            "#,
+        )
+        .await?;
+
+    let query = "INSERT INTO json_stuff (obj, obj2) VALUES ($1, $2)";
+    let _ = conn.describe(query).await?;
+
+    let done = sqlx::query(query)
+        .bind(serde_json::json!({ "a": "a" }))
+        .bind(serde_json::json!({ "a": "a" }))
+        .execute(&mut conn)
+        .await?;
+
+    assert_eq!(done.rows_affected(), 1);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_works_with_cache_disabled() -> anyhow::Result<()> {
+    setup_if_needed();
+
+    let mut url = url::Url::parse(&env::var("DATABASE_URL")?)?;
+    url.query_pairs_mut()
+        .append_pair("statement-cache-capacity", "0");
+
+    let mut conn = PgConnection::connect(url.as_ref()).await?;
+
+    for index in 1..=10_i32 {
+        let _ = sqlx::query("SELECT $1")
+            .bind(index)
+            .execute(&mut conn)
+            .await?;
+    }
 
     Ok(())
 }
@@ -370,6 +417,39 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[sqlx_macros::test]
+async fn it_can_drop_multiple_transactions() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    conn.execute("CREATE TABLE IF NOT EXISTS _sqlx_users_3952 (id INTEGER PRIMARY KEY)")
+        .await?;
+
+    conn.execute("TRUNCATE _sqlx_users_3952").await?;
+
+    // begin .. (drop)
+
+    // run 2 times to see what happens if we drop transactions repeatedly
+    for _ in 0..2 {
+        {
+            let mut tx = conn.begin().await?;
+
+            // do actually something before dropping
+            let _user = sqlx::query("INSERT INTO _sqlx_users_3952 (id) VALUES ($1) RETURNING id")
+                .bind(20_i32)
+                .fetch_one(&mut tx)
+                .await?;
+        }
+
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _sqlx_users_3952")
+            .fetch_one(&mut conn)
+            .await?;
+
+        assert_eq!(count, 0);
+    }
+
+    Ok(())
+}
+
 // run with `cargo test --features postgres -- --ignored --nocapture pool_smoke_test`
 #[ignore]
 #[sqlx_macros::test]
@@ -517,6 +597,7 @@ async fn it_caches_statements() -> anyhow::Result<()> {
     for i in 0..2 {
         let row = sqlx::query("SELECT $1 AS val")
             .bind(i)
+            .persistent(true)
             .fetch_one(&mut conn)
             .await?;
 
@@ -527,6 +608,20 @@ async fn it_caches_statements() -> anyhow::Result<()> {
 
     assert_eq!(1, conn.cached_statements_size());
     conn.clear_cached_statements().await?;
+    assert_eq!(0, conn.cached_statements_size());
+
+    for i in 0..2 {
+        let row = sqlx::query("SELECT $1 AS val")
+            .bind(i)
+            .persistent(false)
+            .fetch_one(&mut conn)
+            .await?;
+
+        let val: u32 = row.get("val");
+
+        assert_eq!(i, val);
+    }
+
     assert_eq!(0, conn.cached_statements_size());
 
     Ok(())
@@ -560,7 +655,57 @@ async fn it_closes_statement_from_cache_issue_470() -> anyhow::Result<()> {
 }
 
 #[sqlx_macros::test]
+async fn it_sets_application_name() -> anyhow::Result<()> {
+    sqlx_test::setup_if_needed();
+
+    let mut options: PgConnectOptions = env::var("DATABASE_URL")?.parse().unwrap();
+    options = options.application_name("some-name");
+
+    let mut conn = PgConnection::connect_with(&options).await?;
+
+    let row = sqlx::query("select current_setting('application_name') as app_name")
+        .fetch_one(&mut conn)
+        .await?;
+
+    let val: String = row.get("app_name");
+
+    assert_eq!("some-name", &val);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn it_can_handle_parameter_status_message_issue_484() -> anyhow::Result<()> {
     new::<Postgres>().await?.execute("SET NAMES 'UTF8'").await?;
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_can_prepare_then_execute() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+    let mut tx = conn.begin().await?;
+
+    let tweet_id: i64 =
+        sqlx::query_scalar("INSERT INTO tweet ( text ) VALUES ( 'Hello, World' ) RETURNING id")
+            .fetch_one(&mut tx)
+            .await?;
+
+    let statement = tx.prepare("SELECT * FROM tweet WHERE id = $1").await?;
+
+    assert_eq!(statement.column(0).name(), "id");
+    assert_eq!(statement.column(1).name(), "created_at");
+    assert_eq!(statement.column(2).name(), "text");
+    assert_eq!(statement.column(3).name(), "owner_id");
+
+    assert_eq!(statement.column(0).type_info().name(), "INT8");
+    assert_eq!(statement.column(1).type_info().name(), "TIMESTAMPTZ");
+    assert_eq!(statement.column(2).type_info().name(), "TEXT");
+    assert_eq!(statement.column(3).type_info().name(), "INT8");
+
+    let row = statement.query().bind(tweet_id).fetch_one(&mut tx).await?;
+    let tweet_text: &str = row.try_get("text")?;
+
+    assert_eq!(tweet_text, "Hello, World");
+
     Ok(())
 }

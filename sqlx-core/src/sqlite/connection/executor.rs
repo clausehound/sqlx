@@ -1,40 +1,37 @@
-use std::sync::Arc;
-
+use crate::common::StatementCache;
+use crate::describe::Describe;
+use crate::error::Error;
+use crate::executor::{Execute, Executor};
+use crate::logger::QueryLogger;
+use crate::sqlite::connection::describe::describe;
+use crate::sqlite::statement::{StatementHandle, VirtualStatement};
+use crate::sqlite::{
+    Sqlite, SqliteArguments, SqliteConnection, SqliteDone, SqliteRow, SqliteStatement,
+    SqliteTypeInfo,
+};
 use either::Either;
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
-use futures_util::{FutureExt, TryStreamExt};
-use hashbrown::HashMap;
+use futures_util::TryStreamExt;
 use libsqlite3_sys::sqlite3_last_insert_rowid;
-
-use crate::common::StatementCache;
-use crate::error::Error;
-use crate::executor::{Execute, Executor};
-use crate::ext::ustr::UStr;
-use crate::sqlite::connection::describe::describe;
-use crate::sqlite::connection::ConnectionHandle;
-use crate::sqlite::statement::{SqliteStatement, StatementHandle};
-use crate::sqlite::{
-    Sqlite, SqliteArguments, SqliteColumn, SqliteConnection, SqliteDone, SqliteRow,
-};
-use crate::statement::StatementInfo;
+use std::borrow::Cow;
+use std::sync::Arc;
 
 fn prepare<'a>(
-    conn: &mut ConnectionHandle,
-    statements: &'a mut StatementCache<SqliteStatement>,
-    statement: &'a mut Option<SqliteStatement>,
+    statements: &'a mut StatementCache<VirtualStatement>,
+    statement: &'a mut Option<VirtualStatement>,
     query: &str,
     persistent: bool,
-) -> Result<&'a mut SqliteStatement, Error> {
-    if !persistent || statements.capacity() == 0 {
-        *statement = Some(SqliteStatement::prepare(conn, query, false)?);
+) -> Result<&'a mut VirtualStatement, Error> {
+    if !persistent || !statements.is_enabled() {
+        *statement = Some(VirtualStatement::new(query, false)?);
         return Ok(statement.as_mut().unwrap());
     }
 
     let exists = statements.contains_key(query);
 
     if !exists {
-        let statement = SqliteStatement::prepare(conn, query, true)?;
+        let statement = VirtualStatement::new(query, true)?;
         statements.insert(query, statement);
     }
 
@@ -50,49 +47,17 @@ fn prepare<'a>(
 }
 
 fn bind(
-    statement: &mut SqliteStatement,
-    arguments: Option<SqliteArguments<'_>>,
-) -> Result<(), Error> {
-    if let Some(arguments) = arguments {
-        arguments.bind(&*statement)?;
-    }
-
-    Ok(())
-}
-
-fn emplace_row_metadata(
     statement: &StatementHandle,
-    columns: &mut Vec<SqliteColumn>,
-    column_names: &mut HashMap<UStr, usize>,
-) -> Result<(), Error> {
-    columns.clear();
-    column_names.clear();
+    arguments: &Option<SqliteArguments<'_>>,
+    offset: usize,
+) -> Result<usize, Error> {
+    let mut n = 0;
 
-    let num = statement.column_count();
-
-    column_names.reserve(num);
-    columns.reserve(num);
-
-    for i in 0..num {
-        let name: UStr = statement.column_name(i).to_owned().into();
-        let type_info = statement.column_type_info(i);
-
-        columns.push(SqliteColumn {
-            ordinal: i,
-            name: name.clone(),
-            type_info,
-        });
-
-        column_names.insert(name, i);
+    if let Some(arguments) = arguments {
+        n += arguments.bind(statement, offset)?;
     }
 
-    Ok(())
-}
-
-fn update_column_type_metadata(statement: &StatementHandle, columns: &mut Vec<SqliteColumn>) {
-    for col in columns.iter_mut() {
-        col.type_info = statement.column_type_info(col.ordinal);
-    }
+    Ok(n)
 }
 
 impl<'c> Executor<'c> for &'c mut SqliteConnection {
@@ -106,8 +71,10 @@ impl<'c> Executor<'c> for &'c mut SqliteConnection {
         'c: 'e,
         E: Execute<'q, Self::Database>,
     {
-        let s = query.query();
+        let sql = query.sql();
+        let mut logger = QueryLogger::new(sql);
         let arguments = query.take_arguments();
+        let persistent = query.persistent() && arguments.is_some();
 
         Box::pin(try_stream! {
             let SqliteConnection {
@@ -115,18 +82,18 @@ impl<'c> Executor<'c> for &'c mut SqliteConnection {
                 ref mut statements,
                 ref mut statement,
                 ref worker,
-                ref mut scratch_row_column_names,
                 ..
             } = self;
 
             // prepare statement object (or checkout from cache)
-            let mut stmt = prepare(conn, statements, statement, s, arguments.is_some())?;
+            let stmt = prepare(statements, statement, sql, persistent)?;
 
-            // bind arguments, if any, to the statement
-            bind(&mut stmt, arguments)?;
+            // keep track of how many arguments we have bound
+            let mut num_arguments = 0;
 
-            while let Some((handle, columns, last_row_values)) = stmt.execute()? {
-                let mut have_metadata = false;
+            while let Some((handle, columns, column_names, last_row_values)) = stmt.prepare(conn)? {
+                // bind values to the statement
+                num_arguments += bind(handle, &arguments, num_arguments)?;
 
                 // tell the worker about the new statement
                 worker.execute(handle);
@@ -140,19 +107,9 @@ impl<'c> Executor<'c> for &'c mut SqliteConnection {
                     // and send them to the still-live row object
                     SqliteRow::inflate_if_needed(handle, &*columns, last_row_values.take());
 
+                    // invoke [sqlite3_step] on the dedicated worker thread
+                    // this will move us forward one row or finish the statement
                     let s = worker.step(handle).await?;
-
-                    if !have_metadata {
-                        have_metadata = true;
-
-                        emplace_row_metadata(
-                            handle,
-                            Arc::make_mut(columns),
-                            Arc::make_mut(scratch_row_column_names),
-                        )?;
-                    } else {
-                        update_column_type_metadata(handle, Arc::make_mut(columns));
-                    }
 
                     match s {
                         Either::Left(changes) => {
@@ -174,11 +131,13 @@ impl<'c> Executor<'c> for &'c mut SqliteConnection {
                             let (row, weak_values_ref) = SqliteRow::current(
                                 *handle,
                                 columns,
-                                scratch_row_column_names
+                                column_names
                             );
 
                             let v = Either::Right(row);
                             *last_row_values = Some(weak_values_ref);
+
+                            logger.increment_rows();
 
                             r#yield!(v);
                         }
@@ -211,15 +170,53 @@ impl<'c> Executor<'c> for &'c mut SqliteConnection {
         })
     }
 
-    #[doc(hidden)]
-    fn describe<'e, 'q: 'e, E: 'q>(
+    fn prepare_with<'e, 'q: 'e>(
         self,
-        query: E,
-    ) -> BoxFuture<'e, Result<StatementInfo<Sqlite>, Error>>
+        sql: &'q str,
+        _parameters: &[SqliteTypeInfo],
+    ) -> BoxFuture<'e, Result<SqliteStatement<'q>, Error>>
     where
         'c: 'e,
-        E: Execute<'q, Self::Database>,
     {
-        describe(self, query.query()).boxed()
+        Box::pin(async move {
+            let SqliteConnection {
+                handle: ref mut conn,
+                ref mut statements,
+                ref mut statement,
+                ..
+            } = self;
+
+            // prepare statement object (or checkout from cache)
+            let statement = prepare(statements, statement, sql, true)?;
+
+            let mut parameters = 0;
+            let mut columns = None;
+            let mut column_names = None;
+
+            while let Some((statement, columns_, column_names_, _)) = statement.prepare(conn)? {
+                parameters += statement.bind_parameter_count();
+
+                // the first non-empty statement is chosen as the statement we pull columns from
+                if !columns_.is_empty() && columns.is_none() {
+                    columns = Some(Arc::clone(columns_));
+                    column_names = Some(Arc::clone(column_names_));
+                }
+            }
+
+            Ok(SqliteStatement {
+                sql: Cow::Borrowed(sql),
+                columns: columns.unwrap_or_default(),
+                column_names: column_names.unwrap_or_default(),
+                parameters,
+            })
+        })
+    }
+
+    #[doc(hidden)]
+    fn describe<'e, 'q: 'e>(self, sql: &'q str) -> BoxFuture<'e, Result<Describe<Sqlite>, Error>>
+    where
+        'c: 'e,
+    {
+        describe(self, sql)
     }
 }

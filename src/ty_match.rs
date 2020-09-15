@@ -81,6 +81,38 @@ impl<'a> MatchBorrowExt for MatchBorrow<&'a [u8], Vec<u8>> {
     type Matched = &'a [u8];
 }
 
+impl<T> MatchBorrowExt for MatchBorrow<&'_ T, T> {
+    type Matched = T;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<&'_ &'_ T, T> {
+    type Matched = T;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<T, &'_ T> {
+    type Matched = T;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<T, &'_ &'_ T> {
+    type Matched = T;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<Option<&'_ T>, Option<T>> {
+    type Matched = Option<T>;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<Option<&'_ &'_ T>, Option<T>> {
+    type Matched = Option<T>;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<Option<T>, Option<&'_ T>> {
+    type Matched = Option<T>;
+}
+
+impl<T> MatchBorrowExt for MatchBorrow<Option<T>, Option<&'_ &'_ T>> {
+    type Matched = Option<T>;
+}
+
 impl<T, U> MatchBorrowExt for &'_ MatchBorrow<T, U> {
     type Matched = U;
 }
@@ -118,5 +150,14 @@ fn test_match_borrow() {
     if false {
         let (_, match_borrow) = MatchBorrow::new("", &String::new());
         let _: &str = match_borrow.match_borrow();
+
+        let (_, match_borrow) = MatchBorrow::new(&&0i64, &0i64);
+        let _: i64 = match_borrow.match_borrow();
+
+        let (_, match_borrow) = MatchBorrow::new(&0i64, &0i64);
+        let _: i64 = match_borrow.match_borrow();
+
+        let (_, match_borrow) = MatchBorrow::new(0i64, &0i64);
+        let _: i64 = match_borrow.match_borrow();
     }
 }

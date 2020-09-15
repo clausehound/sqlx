@@ -1,10 +1,10 @@
+use crate::describe::Describe;
 use crate::error::Error;
 use crate::executor::{Execute, Executor};
 use crate::pool::PoolOptions;
 use crate::pool::{Pool, PoolConnection};
 use crate::postgres::message::{MessageFormat, Notification};
-use crate::postgres::{PgConnection, PgDone, PgRow, Postgres};
-use crate::statement::StatementInfo;
+use crate::postgres::{PgConnection, PgDone, PgRow, PgStatement, PgTypeInfo, Postgres};
 use either::Either;
 use futures_channel::mpsc;
 use futures_core::future::BoxFuture;
@@ -150,6 +150,7 @@ impl PgListener {
     /// # use sqlx_core::postgres::PgListener;
     /// # use sqlx_core::error::Error;
     /// #
+    /// # #[cfg(feature = "runtime-async-std")]
     /// # sqlx_rt::block_on::<_, Result<(), Error>>(async move {
     /// # let mut listener = PgListener::connect("postgres:// ...").await?;
     /// loop {
@@ -182,6 +183,7 @@ impl PgListener {
     /// # use sqlx_core::postgres::PgListener;
     /// # use sqlx_core::error::Error;
     /// #
+    /// # #[cfg(feature = "runtime-async-std")]
     /// # sqlx_rt::block_on::<_, Result<(), Error>>(async move {
     /// # let mut listener = PgListener::connect("postgres:// ...").await?;
     /// loop {
@@ -283,14 +285,24 @@ impl<'c> Executor<'c> for &'c mut PgListener {
         self.connection().fetch_optional(query)
     }
 
-    #[doc(hidden)]
-    fn describe<'e, 'q: 'e, E: 'q>(
+    fn prepare_with<'e, 'q: 'e>(
         self,
-        query: E,
-    ) -> BoxFuture<'e, Result<StatementInfo<Self::Database>, Error>>
+        query: &'q str,
+        parameters: &'e [PgTypeInfo],
+    ) -> BoxFuture<'e, Result<PgStatement<'q>, Error>>
     where
         'c: 'e,
-        E: Execute<'q, Self::Database>,
+    {
+        self.connection().prepare_with(query, parameters)
+    }
+
+    #[doc(hidden)]
+    fn describe<'e, 'q: 'e>(
+        self,
+        query: &'q str,
+    ) -> BoxFuture<'e, Result<Describe<Self::Database>, Error>>
+    where
+        'c: 'e,
     {
         self.connection().describe(query)
     }

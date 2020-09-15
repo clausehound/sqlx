@@ -5,7 +5,7 @@ mod journal_mode;
 mod parse;
 
 pub use journal_mode::SqliteJournalMode;
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Duration};
 
 /// Options and flags which can be used to configure a SQLite connection.
 ///
@@ -48,7 +48,9 @@ pub struct SqliteConnectOptions {
     pub(crate) create_if_missing: bool,
     pub(crate) journal_mode: SqliteJournalMode,
     pub(crate) foreign_keys: bool,
+    pub(crate) shared_cache: bool,
     pub(crate) statement_cache_capacity: usize,
+    pub(crate) busy_timeout: Duration,
 }
 
 impl Default for SqliteConnectOptions {
@@ -65,8 +67,10 @@ impl SqliteConnectOptions {
             read_only: false,
             create_if_missing: false,
             foreign_keys: true,
+            shared_cache: false,
             statement_cache_capacity: 100,
             journal_mode: SqliteJournalMode::Wal,
+            busy_timeout: Duration::from_secs(5),
         }
     }
 
@@ -103,7 +107,7 @@ impl SqliteConnectOptions {
     /// Sets the [access mode](https://www.sqlite.org/c3ref/open.html) to create the database file
     /// if the file does not exist.
     ///
-    /// By default, a new file **will be** created if one is not found.
+    /// By default, a new file **will not be** created if one is not found.
     pub fn create_if_missing(mut self, create: bool) -> Self {
         self.create_if_missing = create;
         self
@@ -117,6 +121,15 @@ impl SqliteConnectOptions {
     /// The default cache capacity is 100 statements.
     pub fn statement_cache_capacity(mut self, capacity: usize) -> Self {
         self.statement_cache_capacity = capacity;
+        self
+    }
+
+    /// Sets a timeout value to wait when the database is locked, before
+    /// returning a busy timeout error.
+    ///
+    /// The default busy timeout is 5 seconds.
+    pub fn busy_timeout(mut self, timeout: Duration) -> Self {
+        self.busy_timeout = timeout;
         self
     }
 }

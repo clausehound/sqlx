@@ -5,18 +5,20 @@ use futures_core::stream::BoxStream;
 use futures_util::{future, StreamExt, TryFutureExt, TryStreamExt};
 
 use crate::arguments::{Arguments, IntoArguments};
-use crate::database::{Database, HasArguments};
+use crate::database::{Database, HasArguments, HasStatement, HasStatementCache};
 use crate::encode::Encode;
 use crate::error::Error;
 use crate::executor::{Execute, Executor};
+use crate::statement::Statement;
 use crate::types::Type;
 
 /// Raw SQL query with bind parameters. Returned by [`query`][crate::query::query].
 #[must_use = "query must be executed to affect database"]
 pub struct Query<'q, DB: Database, A> {
-    pub(crate) query: &'q str,
+    pub(crate) statement: Either<&'q str, &'q <DB as HasStatement<'q>>::Statement>,
     pub(crate) arguments: Option<A>,
     pub(crate) database: PhantomData<DB>,
+    pub(crate) persistent: bool,
 }
 
 /// SQL query that will map its results to owned Rust types.
@@ -39,13 +41,28 @@ where
     A: Send + IntoArguments<'q, DB>,
 {
     #[inline]
-    fn query(&self) -> &'q str {
-        self.query
+    fn sql(&self) -> &'q str {
+        match self.statement {
+            Either::Right(ref statement) => statement.sql(),
+            Either::Left(sql) => sql,
+        }
+    }
+
+    fn statement(&self) -> Option<&<DB as HasStatement<'q>>::Statement> {
+        match self.statement {
+            Either::Right(ref statement) => Some(&statement),
+            Either::Left(_) => None,
+        }
     }
 
     #[inline]
     fn take_arguments(&mut self) -> Option<<DB as HasArguments<'q>>::Arguments> {
         self.arguments.take().map(IntoArguments::into_arguments)
+    }
+
+    #[inline]
+    fn persistent(&self) -> bool {
+        self.persistent
     }
 }
 
@@ -67,6 +84,24 @@ impl<'q, DB: Database> Query<'q, DB, <DB as HasArguments<'q>>::Arguments> {
     }
 }
 
+impl<'q, DB, A> Query<'q, DB, A>
+where
+    DB: Database + HasStatementCache,
+{
+    /// If `true`, the statement will get prepared once and cached to the
+    /// connection's statement cache.
+    ///
+    /// If queried once with the flag set to `true`, all subsequent queries
+    /// matching the one with the flag will use the cached statement until the
+    /// cache is cleared.
+    ///
+    /// Default: `true`.
+    pub fn persistent(mut self, value: bool) -> Self {
+        self.persistent = value;
+        self
+    }
+}
+
 impl<'q, DB, A: Send> Query<'q, DB, A>
 where
     DB: Database,
@@ -76,8 +111,8 @@ where
     ///
     /// See [`try_map`](Query::try_map) for a fallible version of this method.
     ///
-    /// The [`query_as`](crate::query_as::query_as) method will construct a mapped query using
-    /// a [`FromRow`](crate::row::FromRow) implementation.
+    /// The [`query_as`](super::query_as::query_as) method will construct a mapped query using
+    /// a [`FromRow`](super::from_row::FromRow) implementation.
     #[inline]
     pub fn map<F, O>(self, f: F) -> Map<'q, DB, impl TryMapRow<DB, Output = O>, A>
     where
@@ -89,8 +124,8 @@ where
 
     /// Map each row in the result to another type.
     ///
-    /// The [`query_as`](crate::query_as::query_as) method will construct a mapped query using
-    /// a [`FromRow`](crate::row::FromRow) implementation.
+    /// The [`query_as`](super::query_as::query_as) method will construct a mapped query using
+    /// a [`FromRow`](super::from_row::FromRow) implementation.
     #[inline]
     pub fn try_map<F>(self, f: F) -> Map<'q, DB, F, A>
     where
@@ -193,13 +228,23 @@ where
     A: IntoArguments<'q, DB>,
 {
     #[inline]
-    fn query(&self) -> &'q str {
-        self.inner.query()
+    fn sql(&self) -> &'q str {
+        self.inner.sql()
+    }
+
+    #[inline]
+    fn statement(&self) -> Option<&<DB as HasStatement<'q>>::Statement> {
+        self.inner.statement()
     }
 
     #[inline]
     fn take_arguments(&mut self) -> Option<<DB as HasArguments<'q>>::Arguments> {
         self.inner.take_arguments()
+    }
+
+    #[inline]
+    fn persistent(&self) -> bool {
+        self.inner.arguments.is_some()
     }
 }
 
@@ -340,8 +385,39 @@ where
     }
 }
 
+// Make a SQL query from a statement.
+pub(crate) fn query_statement<'q, DB>(
+    statement: &'q <DB as HasStatement<'q>>::Statement,
+) -> Query<'q, DB, <DB as HasArguments<'_>>::Arguments>
+where
+    DB: Database,
+{
+    Query {
+        database: PhantomData,
+        arguments: Some(Default::default()),
+        statement: Either::Right(statement),
+        persistent: true,
+    }
+}
+
+// Make a SQL query from a statement, with the given arguments.
+pub(crate) fn query_statement_with<'q, DB, A>(
+    statement: &'q <DB as HasStatement<'q>>::Statement,
+    arguments: A,
+) -> Query<'q, DB, A>
+where
+    DB: Database,
+    A: IntoArguments<'q, DB>,
+{
+    Query {
+        database: PhantomData,
+        arguments: Some(arguments),
+        statement: Either::Right(statement),
+        persistent: true,
+    }
+}
+
 /// Make a SQL query.
-#[inline]
 pub fn query<DB>(sql: &str) -> Query<'_, DB, <DB as HasArguments<'_>>::Arguments>
 where
     DB: Database,
@@ -349,12 +425,12 @@ where
     Query {
         database: PhantomData,
         arguments: Some(Default::default()),
-        query: sql,
+        statement: Either::Left(sql),
+        persistent: true,
     }
 }
 
 /// Make a SQL query, with the given arguments.
-#[inline]
 pub fn query_with<'q, DB, A>(sql: &'q str, arguments: A) -> Query<'q, DB, A>
 where
     DB: Database,
@@ -363,7 +439,8 @@ where
     Query {
         database: PhantomData,
         arguments: Some(arguments),
-        query: sql,
+        statement: Either::Left(sql),
+        persistent: true,
     }
 }
 
