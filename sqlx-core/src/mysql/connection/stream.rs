@@ -149,6 +149,9 @@ impl MySqlStream {
         // TODO: packet compression
         // TODO: packet joining
 
+        if payload.is_empty() {
+            return Err(Error::Protocol("Empty package".to_string()));
+        }
         if payload[0] == 0xff {
             self.busy = Busy::NotBusy;
 
